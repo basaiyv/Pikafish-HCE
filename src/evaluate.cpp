@@ -38,47 +38,12 @@ using namespace std;
 
 namespace Stockfish {
 
-namespace Eval {
-
-  string currentEvalFileName = "None";
-
-  /// NNUE::init() tries to load a NNUE network at startup time, or when the engine
-  /// receives a UCI command "setoption name EvalFile value .*.nnue"
-  /// The name of the NNUE network is always retrieved from the EvalFile option.
-  /// We search the given network in two locations: in the active working directory and
-  /// in the engine directory.
-
-  void NNUE::init() {
-
-    string eval_file = string(Options["EvalFile"]);
-    if (eval_file.empty())
-        eval_file = EvalFileDefaultName;
-
-    vector<string> dirs = { "" , CommandLine::binaryDirectory };
-
-    for (string directory : dirs)
-        if (currentEvalFileName != eval_file)
-        {
-            ifstream stream(directory + eval_file, ios::binary);
-            stringstream ss = read_zipped_nnue(directory + eval_file);
-            if (load_eval(eval_file, stream) || load_eval(eval_file, ss))
-                currentEvalFileName = eval_file;
-        }
-  }
-
-  /// NNUE::verify() verifies that the last net used was loaded successfully
-  void NNUE::verify() {
-
-    return;
-  }
-}
-
 namespace Trace {
 
     enum Tracing { NO_TRACE, TRACE };
 
     enum Term { // The first 8 entries are reserved for PieceType
-        MATERIAL = 8, IMBALANCE, PAIR, MOBILITY, THREAT, PASSED, SPACE, WINNABLE, TOTAL, TERM_NB
+        MATERIAL = 8, IMBALANCE, PAIR, MOBILITY, THREAT, PIECES, WINNABLE, TOTAL, TERM_NB
     };
 
     Score scores[TERM_NB][COLOR_NB];
@@ -138,32 +103,16 @@ namespace {
         {S(-582, -4894), S(2260, -2360), S(4002, -2435), S(4595, 1090), S(5389, 2949), S(9760, 3209), S(8500, 3453), S(11956, 6472), S(13619, 7657)}, // KNIGHT
         {S(1692, -2811), S(911, -1898), S(3017, -904), S(7134, 1537), S(9276, -1351)}, // BISHOP
     };
-
-    constexpr Score protectionBonus[PIECE_TYPE_NB][PIECE_TYPE_NB] = {
-        {}, // NO_PIECE_TYPE
+    constexpr Score protectionBonus[2][PIECE_TYPE_NB] = {
         {
             S(1833, 112), S(1005, 1373), S(460, -327), S(-1001, -1037),
             S(-2677, -321), S(-879, 5306), S(2328, 743), S(3864, 3564)
         }, // ROOK
         {
-            S(-1281, 1159), S(2213, -32), S(230, -189), S(-124, 1562),
-            S(-324, 1246), S(-246, -4473), S(1372, 501), S(-494, 140)
-        }, // ADVISOR
-        {
-            S(-516, 808), S(253, -554), S(-814, 1326), S(14, 741),
-            S(1596, 613), S(4431, 518), S(1766, -100), S(-1741, -1078)
-        }, // CANNON
-        {}, // PAWN
-        {
             S(-841, -20), S(4270, 4745), S(-3281, -1955), S(1673, 3340),
             S(-1139, 2037), S(-959, 991), S(-1884, 1464), S(-2588, 315)
-        }, // KNIGHT
-        {
-            S(-44, -377), S(-229, 517), S(1123, -2728), S(1471, 1924),
-            S(-341, 442), S(3092, 1652), S(4357, -387), S(-960, -1451)
-        } // BISHOP
+        } // KNIGHT
     };
-    
 #undef S
 
     // Evaluation class computes and stores attacks tables and other working data
@@ -251,16 +200,19 @@ namespace {
             int mob = popcount(b & ~attackedBy[Them][PAWN]);
             mobility[Us] += mobilityBonus[Pt][mob];
 
-            Bitboard protectedBB = b & pos.pieces(Us) & (~attackedBy2[Them]);
-            while (protectedBB) {
-                Square protectedSq = pop_lsb(protectedBB);
-                PieceType protectedPt = type_of(pos.piece_on(protectedSq));
-                protection[Us] += protectionBonus[Pt][protectedPt];
+            if constexpr (Pt == KNIGHT || Pt == ROOK) {
+                int PtId = (Pt == ROOK ? 0 : 1);
+                Bitboard protectedBB = b & pos.pieces(Us) & (~attackedBy2[Them]) & (~attackedBy[Them][PAWN]);
+                while (protectedBB) {
+                    Square protectedSq = pop_lsb(protectedBB);
+                    PieceType protectedPt = type_of(pos.piece_on(protectedSq));
+                    protection[Us] += protectionBonus[PtId][protectedPt];
+                }
             }
 
             if constexpr (Pt == CANNON) { // 炮的评估
                 int blocker = popcount(between_bb(s, ksq) & pos.pieces()) - 1;
-                const Bitboard originalAdvisor = square_bb(SQ_D0) | square_bb(SQ_D9) | square_bb(SQ_F0) | square_bb(SQ_F9);
+                constexpr Bitboard originalAdvisor = ((FileDBB | FileFBB) & (Rank0BB | Rank9BB));
                 Bitboard advisorBB = pos.pieces(Them, ADVISOR);
                 if (file_of(s) == FILE_E && (ksq == SQ_E0 || ksq == SQ_E9) && popcount(originalAdvisor & advisorBB) == 2) {
                     if (!blocker) { // 空头炮
@@ -289,7 +241,6 @@ namespace {
     Score Evaluation<T>::threat() {
         Score score = SCORE_ZERO; // 初始化
         constexpr Color Them = ~Us;
-        const Square ksq = pos.square<KING>(Them);
         // 士象全
         if (pos.count<ADVISOR>(Us) + pos.count<BISHOP>(Us) == 4)
             score += AdvisorBishopPair;
@@ -302,12 +253,12 @@ namespace {
         constexpr Bitboard crossed = (Us == WHITE ? (Rank5BB | Rank6BB | Rank7BB | Rank8BB | Rank9BB) : (Rank0BB | Rank1BB | Rank2BB | Rank3BB | Rank4BB));
         constexpr Bitboard left = (FileABB | FileBBB | FileCBB | FileDBB);
         constexpr Bitboard right = (FileFBB | FileGBB | FileHBB | FileIBB);
+        Bitboard strongPieces = pos.pieces(Us, ROOK) | pos.pieces(Us, KNIGHT) | pos.pieces(Us, CANNON);
+        Bitboard attackedPieces = attackedBy[Them][PAWN] | attackedBy[Them][ADVISOR] | attackedBy[Them][BISHOP]
+            | attackedBy[Them][CANNON] | attackedBy[Them][KNIGHT] | (attackedBy[Them][ROOK] & ~attackedBy[Us][ALL_PIECES]);
         // 多子归边
         for (int i = 0; i <= 1; i++) {
             Bitboard side = (i == 0 ? left : right);
-            Bitboard strongPieces = pos.pieces(Us, ROOK) | pos.pieces(Us, KNIGHT) | pos.pieces(Us, CANNON);
-            Bitboard attackedPieces = attackedBy[Them][PAWN] | attackedBy[Them][ADVISOR] | attackedBy[Them][BISHOP]
-                | attackedBy[Them][CANNON] | attackedBy[Them][KNIGHT] | (attackedBy[Them][ROOK] & ~attackedBy[Us][ALL_PIECES]);
             int cnt = popcount(strongPieces & side & crossed & (~attackedPieces));
             cnt = cnt >= 5 ? 4 : cnt;
             score += PiecesOnOneSide[cnt];
@@ -354,20 +305,33 @@ namespace {
         initialize<WHITE>();
         initialize<BLACK>();
 
-        score += pieces<WHITE, KNIGHT>() - pieces<BLACK, KNIGHT>()
-            + pieces<WHITE, BISHOP>() - pieces<BLACK, BISHOP>()
-            + pieces<WHITE, ROOK>() - pieces<BLACK, ROOK>()
-            + pieces<WHITE, ADVISOR>() - pieces<BLACK, ADVISOR>()
-            + pieces<WHITE, CANNON>() - pieces<BLACK, CANNON>();
+        Score piecesWhite = pieces<WHITE, KNIGHT>()
+            + pieces<WHITE, BISHOP>()
+            + pieces<WHITE, ROOK>()
+            + pieces<WHITE, ADVISOR>()
+            + pieces<WHITE, CANNON>();
+
+        Score piecesBlack = pieces<BLACK, KNIGHT>()
+            + pieces<BLACK, BISHOP>()
+            + pieces<BLACK, ROOK>()
+            + pieces<BLACK, ADVISOR>()
+            + pieces<BLACK, CANNON>();
+
+        score += piecesWhite - piecesBlack;
+
+        if constexpr (T) {
+            Trace::add(PIECES, piecesWhite, piecesBlack);
+        }
 
         score += threat<WHITE>() - threat<BLACK>();
 
         score += (mobility[WHITE] - mobility[BLACK]) / 100;
+
         score += (protection[WHITE] - protection[BLACK]) / 100;
 
         if constexpr (T) {
             Trace::add(THREAT, threat<WHITE>(), threat<BLACK>());
-            Trace::add(MOBILITY, mobility[WHITE], mobility[BLACK]);
+            Trace::add(MOBILITY, mobility[WHITE] / 100, mobility[BLACK] / 100);
             Trace::add(TOTAL, score);
         }
 
@@ -390,10 +354,10 @@ int rule60_a = 118, rule60_b = 221;
 
 Value Eval::evaluate(const Position& pos, int* complexity) {
 
-  if (complexity)
-      *complexity = 0;
-
   Value v = Evaluation<NO_TRACE>(pos).value();
+
+  if (complexity)
+      *complexity = abs(v - pos.material_diff());
 
   // Damp down the evaluation linearly when shuffling
   v = v * (rule60_a - pos.rule60_count()) / rule60_b;
@@ -509,15 +473,9 @@ std::string Eval::trace(Position& pos) {
         << "|   Material | " << Term(MATERIAL)
         << "|  Imbalance | " << Term(IMBALANCE)
         << "|       Pair | " << Term(PAIR)
-        << "|      Pawns | " << Term(PAWN)
-        << "|    Knights | " << Term(KNIGHT)
-        << "|    Bishops | " << Term(BISHOP)
-        << "|      Rooks | " << Term(ROOK)
+        << "|     Pieces | " << Term(PIECES)
         << "|   Mobility | " << Term(MOBILITY)
-        << "|King safety | " << Term(KING)
         << "|    Threats | " << Term(THREAT)
-        << "|     Passed | " << Term(PASSED)
-        << "|      Space | " << Term(SPACE)
         << "|   Winnable | " << Term(WINNABLE)
         << "+------------+-------------+-------------+-------------+\n"
         << "|      Total | " << Term(TOTAL)

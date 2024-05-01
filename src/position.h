@@ -23,12 +23,12 @@
 #include <deque>
 #include <memory> // For std::unique_ptr
 #include <string>
+#include <cstring>
 
 #include "bitboard.h"
 #include "psqt.h"
 #include "types.h"
-
-#include "nnue/nnue_accumulator.h"
+#include "misc.h"
 
 namespace Stockfish {
 
@@ -56,10 +56,6 @@ struct StateInfo {
   Piece      capturedPiece;
   uint16_t   chased;
   Move       move;
-
-  // Used by NNUE
-  Eval::NNUE::Accumulator accumulator;
-  DirtyPiece dirtyPiece;
 };
 
 
