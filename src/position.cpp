@@ -972,7 +972,7 @@ bool Position::rule_judge(Value& result, int ply) const {
     }
 
     // 60 move rule
-    if (st->rule60 >= 120)
+    if (st->rule60 >= 150)
     {
         result = MoveList<LEGAL>(*this).size() ? VALUE_DRAW : mated_in(ply);
         return true;
