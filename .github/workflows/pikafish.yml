@@ -3,7 +3,7 @@ name: Pikafish
 on:
   push:
     branches:
-      - main
+      - main-test
 
 jobs:
   Pikafish:
@@ -23,7 +23,7 @@ jobs:
             shell: msys2 {0}
             ext: .exe
             sde: /d/a/Pikafish-HCE/Pikafish-HCE/.output/sde-temp-files/sde-external-9.27.0-2023-09-13-win/sde.exe -future --
-        arch: ["-vnni512", "-bmi2", "-avx2", "-modern"]
+        arch: ["-vnni512", "-bmi2", "-avx2", "-modern","-ssse3"]
 
     defaults:
       run:
